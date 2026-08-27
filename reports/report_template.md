@@ -1,5 +1,7 @@
 # Day 10 Reliability Report
 
+**Họ và tên:** Đặng Nguyên Giáp — **MSSV:** 2A202601486
+
 ## 1. Architecture summary
 
 Describe your gateway, circuit breaker, fallback chain, and cache layers.
