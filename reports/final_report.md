@@ -1,11 +1,12 @@
-# Day 10 Reliability Report
+# Báo cáo Reliability - Day 10
 
 **Họ và tên:** Đặng Nguyên Giáp — **MSSV:** 2A202601486
 
-## 1. Architecture summary
+## 1. Tổng quan kiến trúc
 
-The gateway routes every request through a cache-first, breaker-guarded provider chain, falling
-back to a static degraded response only if the cache misses and every provider is unavailable.
+Gateway định tuyến mọi request qua chuỗi: kiểm tra cache trước tiên → gọi provider có bảo vệ bởi
+circuit breaker → chỉ trả về thông báo suy giảm (degraded) tĩnh khi cache miss và tất cả provider
+đều không khả dụng.
 
 ```
 User Request
@@ -14,66 +15,66 @@ User Request
 [Gateway.complete(prompt)]
     |
     v
-[Cache check: ResponseCache / SharedRedisCache]
-    |-- similarity >= threshold & not false-hit --> HIT --> return cached text (route="cache_hit:<score>")
+[Kiểm tra cache: ResponseCache / SharedRedisCache]
+    |-- similarity >= threshold & không phải false-hit --> HIT --> trả text đã cache (route="cache_hit:<score>")
     |
-    v MISS (or cache disabled)
-[Circuit Breaker: primary] --(CLOSED/HALF_OPEN, allow)--> FakeLLMProvider("primary").complete()
-    |  success --> cache.set() --> return (route="primary")
-    |  failure / CircuitOpenError (OPEN, timeout not elapsed) --> record_failure(), try next provider
+    v MISS (hoặc cache đang tắt)
+[Circuit Breaker: primary] --(CLOSED/HALF_OPEN, cho phép)--> FakeLLMProvider("primary").complete()
+    |  thành công --> cache.set() --> trả kết quả (route="primary")
+    |  lỗi / CircuitOpenError (đang OPEN, chưa hết timeout) --> record_failure(), thử provider tiếp theo
     v
-[Circuit Breaker: backup] --(CLOSED/HALF_OPEN, allow)--> FakeLLMProvider("backup").complete()
-    |  success --> cache.set() --> return (route="fallback")
-    |  failure / CircuitOpenError --> record_failure(), no more providers
+[Circuit Breaker: backup] --(CLOSED/HALF_OPEN, cho phép)--> FakeLLMProvider("backup").complete()
+    |  thành công --> cache.set() --> trả kết quả (route="fallback")
+    |  lỗi / CircuitOpenError --> record_failure(), hết provider để thử
     v
-[Static fallback]
-    return "The service is temporarily degraded. Please try again soon." (route="static_fallback")
+[Fallback tĩnh]
+    trả về "The service is temporarily degraded. Please try again soon." (route="static_fallback")
 ```
 
-Circuit breaker state machine (per provider, independent instances in `gateway.breakers`):
+Máy trạng thái circuit breaker (mỗi provider có một instance độc lập, lưu trong `gateway.breakers`):
 
 ```
         failure_count >= failure_threshold
    CLOSED ---------------------------------> OPEN
      ^                                          |
-     | success_count >= success_threshold       | reset_timeout_seconds elapsed
+     | success_count >= success_threshold       | đã trôi qua reset_timeout_seconds
      |                                          v
-   HALF_OPEN <-------------------------------- (probe allowed)
+   HALF_OPEN <-------------------------------- (cho phép 1 request "thăm dò")
      |
-     +-- probe fails --> OPEN (reason="probe_failure")
+     +-- probe thất bại --> OPEN (reason="probe_failure")
 ```
 
-## 2. Configuration
+## 2. Cấu hình
 
-| Setting | Value | Reason |
+| Tham số | Giá trị | Lý do |
 |---|---:|---|
-| failure_threshold | 3 | 3 consecutive failures is enough signal to stop hammering a degrading provider without over-reacting to a single blip; matches the "no retry storm" requirement. |
-| reset_timeout_seconds | 2 | Short enough that a recovered provider is probed quickly (recovery_time_ms observed ≈ 2.2s, close to this floor), long enough to avoid immediately re-opening on a still-failing provider. |
-| success_threshold | 1 | A single successful probe in HALF_OPEN is enough to trust `FakeLLMProvider`, since failures are memoryless (random per call) rather than a real warm-up cost. |
-| cache TTL (ttl_seconds) | 300 | 5 minutes balances staleness risk against hit rate for a FAQ-style workload where answers don't change every request. |
-| similarity_threshold | 0.92 | Tested 0.85 first — got false hits on date-varying queries ("refund policy 2024" vs "2026") scoring ~0.87 under n-gram cosine because only the 4-digit year token differs; 0.92 keeps genuine near-duplicates while still requiring the false-hit year/number guard as a second line of defense. |
-| load_test.requests | 100 (per scenario, 400 total across 4 scenarios) | Large enough sample for stable P95/P99 percentile estimates and for the circuit breaker to cycle through several open/half-open/closed transitions within one run. |
+| failure_threshold | 3 | 3 lần lỗi liên tiếp là đủ tín hiệu để ngừng gọi vào một provider đang suy giảm, mà không phản ứng thái quá với một lỗi ngẫu nhiên đơn lẻ; đáp ứng đúng yêu cầu "không retry storm". |
+| reset_timeout_seconds | 2 | Đủ ngắn để một provider đã hồi phục được thăm dò (probe) nhanh chóng (recovery_time_ms quan sát được ≈ 2.2s, gần sát mốc này), đủ dài để tránh mở lại mạch ngay lập tức khi provider vẫn còn đang lỗi. |
+| success_threshold | 1 | Chỉ cần 1 lần probe thành công ở trạng thái HALF_OPEN là đủ để tin tưởng lại `FakeLLMProvider`, vì các lỗi ở đây là ngẫu nhiên độc lập theo từng lần gọi (memoryless), không phải kiểu lỗi cần "khởi động lại từ từ" (warm-up) thật sự. |
+| cache TTL (ttl_seconds) | 300 | 5 phút cân bằng giữa rủi ro dữ liệu cũ (staleness) và tỉ lệ cache hit, phù hợp với workload dạng FAQ mà câu trả lời không đổi liên tục theo từng request. |
+| similarity_threshold | 0.92 | Đã thử 0.85 trước — bị false-hit với các câu hỏi chỉ khác năm ("refund policy 2024" vs "2026") vì n-gram cosine cho điểm ~0.87 (chỉ khác token năm 4 chữ số); 0.92 vẫn giữ được các cặp câu gần giống thật sự, đồng thời guardrail chống false-hit theo năm/số vẫn đóng vai trò lớp bảo vệ thứ hai. |
+| load_test.requests | 100 (mỗi scenario, tổng 400 trên 4 scenario) | Đủ lớn để ước lượng P95/P99 ổn định và để circuit breaker có cơ hội trải qua nhiều lần chuyển trạng thái open/half-open/closed trong một lần chạy. |
 
-## 3. SLO definitions
+## 3. Định nghĩa SLO
 
-Values below are the **combined** run across all 4 chaos scenarios (`reports/metrics.json`) — this
-deliberately includes scenarios engineered to fail (`both_degraded`), so combined SLIs look worse
-than any single healthy scenario. See §7 for the per-scenario breakdown, which is the more honest
-picture of production-like health.
+Các giá trị dưới đây là kết quả **gộp (combined)** từ cả 4 kịch bản chaos (`reports/metrics.json`)
+— việc gộp này cố tình bao gồm cả kịch bản được thiết kế để thất bại (`both_degraded`), nên các SLI
+gộp trông tệ hơn bất kỳ kịch bản "khoẻ mạnh" đơn lẻ nào. Xem mục 7 để có bảng chi tiết theo từng
+scenario — đó mới là bức tranh trung thực hơn về sức khoẻ hệ thống kiểu production.
 
-| SLI | SLO target | Actual value (combined) | Met? |
+| SLI | Mục tiêu SLO | Giá trị thực tế (gộp) | Đạt? |
 |---|---|---:|---|
-| Availability | >= 99% | 84.5% | ❌ No (dragged down by `both_degraded`) |
-| Latency P95 | < 2500 ms | 315.82 ms | ✅ Yes |
-| Fallback success rate | >= 95% | 52.67% | ❌ No (dragged down by `both_degraded`, which has no healthy fallback) |
-| Cache hit rate | >= 10% | 55.25% | ✅ Yes |
-| Recovery time | < 5000 ms | 2234.68 ms | ✅ Yes |
+| Availability | >= 99% | 84.5% | ❌ Không (bị kéo xuống bởi `both_degraded`) |
+| Latency P95 | < 2500 ms | 315.82 ms | ✅ Đạt |
+| Fallback success rate | >= 95% | 52.67% | ❌ Không (bị kéo xuống bởi `both_degraded`, kịch bản không có fallback khoẻ mạnh) |
+| Cache hit rate | >= 10% | 55.25% | ✅ Đạt |
+| Recovery time | < 5000 ms | 2234.68 ms | ✅ Đạt |
 
 ## 4. Metrics
 
-From `reports/metrics.json` (combined run, cache enabled, 400 requests across all scenarios):
+Trích từ `reports/metrics.json` (chạy gộp, cache đang bật, 400 request trên toàn bộ 4 scenario):
 
-| Metric | Value |
+| Metric | Giá trị |
 |---|---:|
 | total_requests | 400 |
 | availability | 0.845 |
@@ -88,42 +89,42 @@ From `reports/metrics.json` (combined run, cache enabled, 400 requests across al
 | estimated_cost | 0.048626 |
 | estimated_cost_saved | 0.221 |
 
-## 5. Cache comparison
+## 5. So sánh có cache vs không cache
 
-Same config and scenarios, `cache.enabled: true` vs `cache.enabled: false`
-(`configs/default.yaml` vs `configs/no_cache.yaml`, outputs `reports/metrics.json` vs
+Cùng config và scenario, `cache.enabled: true` vs `cache.enabled: false`
+(`configs/default.yaml` vs `configs/no_cache.yaml`, xuất ra `reports/metrics.json` vs
 `reports/metrics_no_cache.json`):
 
-| Metric | Without cache | With cache | Delta |
+| Metric | Không cache | Có cache | Chênh lệch |
 |---|---:|---:|---|
-| availability | 0.7375 | 0.845 | +0.1075 (cache avoids calls that would have hit failing providers) |
-| latency_p50_ms | 273.25 | 267.33 | -5.92 ms (cache hits return in 0ms, pulling the median down) |
-| latency_p95_ms | 316.15 | 315.82 | ~flat (P95 is dominated by provider latency on cache misses) |
-| circuit_open_count | 26 | 12 | -14 (fewer live provider calls means fewer failures accumulate against the breaker) |
-| estimated_cost | 0.132756 | 0.048626 | -0.084130 (≈63% cheaper) |
+| availability | 0.7375 | 0.845 | +0.1075 (cache tránh được các lời gọi lẽ ra đã đụng phải provider đang lỗi) |
+| latency_p50_ms | 273.25 | 267.33 | -5.92 ms (cache hit trả về gần như 0ms, kéo median xuống) |
+| latency_p95_ms | 316.15 | 315.82 | ~gần như không đổi (P95 bị chi phối bởi độ trễ provider khi cache miss) |
+| circuit_open_count | 26 | 12 | -14 (ít lời gọi provider thật hơn nên ít lỗi tích luỹ vào breaker hơn) |
+| estimated_cost | 0.132756 | 0.048626 | -0.084130 (rẻ hơn ≈63%) |
 | cache_hit_rate | 0 | 0.5525 | +0.5525 |
 | estimated_cost_saved | 0 | 0.221 | +0.221 |
 
-Takeaway: the cache is not just a latency optimization here — because it intercepts requests
-before they reach the provider chain, it also reduces the number of failures the circuit breakers
-see, which lowers `circuit_open_count` and raises overall availability.
+**Nhận xét:** cache ở đây không chỉ tối ưu độ trễ — vì nó chặn request trước khi tới chuỗi
+provider, nó còn giảm số lỗi mà circuit breaker phải "chứng kiến", từ đó giảm `circuit_open_count`
+và tăng availability tổng thể.
 
 ## 6. Redis shared cache
 
-- Why in-memory cache is insufficient for multi-instance deployments: `ResponseCache` keeps
-  `self._entries` as a Python list local to one process. If the gateway is scaled to N replicas
-  behind a load balancer, each replica has its own empty cache — the effective hit rate stays low
-  and identical queries are answered N times by the (expensive, failure-prone) provider chain
-  instead of once.
-- How `SharedRedisCache` solves this: every entry is written to Redis as a hash
-  (`{prefix}{md5(query)}` → `{query, response}`) with a TTL via `EXPIRE`. Any gateway instance
-  pointed at the same `redis_url` can `HGET`/`SCAN` the same keys, so a cache warmed by one
-  instance is immediately visible to all others — no extra coordination needed.
+- **Vì sao cache in-memory không đủ cho triển khai nhiều instance:** `ResponseCache` giữ
+  `self._entries` là một list Python cục bộ trong 1 process. Nếu gateway được scale ra N replica
+  đứng sau load balancer, mỗi replica có cache riêng rỗng — hit rate thực tế vẫn thấp và cùng một
+  câu hỏi bị trả lời lại N lần bởi chuỗi provider (vốn tốn kém và dễ lỗi) thay vì chỉ 1 lần.
+- **`SharedRedisCache` giải quyết vấn đề này như thế nào:** mỗi entry được ghi vào Redis dưới dạng
+  hash (`{prefix}{md5(query)}` → `{query, response}`) kèm TTL qua `EXPIRE`. Bất kỳ instance gateway
+  nào trỏ tới cùng `redis_url` đều có thể `HGET`/`SCAN` cùng các key đó, nên cache được "làm nóng"
+  bởi 1 instance sẽ hiển thị ngay lập tức cho tất cả các instance khác — không cần thêm cơ chế đồng
+  bộ nào khác.
 
-### Evidence of shared state
+### Bằng chứng chia sẻ trạng thái (shared state)
 
-Two independent `SharedRedisCache` Python objects (simulating two gateway instances) against the
-same Redis instance:
+Hai object `SharedRedisCache` độc lập trong Python (mô phỏng 2 instance gateway) cùng trỏ tới một
+Redis:
 
 ```
 >>> cache_a = SharedRedisCache("redis://localhost:6379/0", ttl_seconds=300, similarity_threshold=0.92)
@@ -133,10 +134,10 @@ same Redis instance:
 ('Paris is the capital of France.', 1.0)
 ```
 
-`cache_b` never called `.set()` — it read a value written by `cache_a`, proving state is shared
-through Redis rather than held in-process.
+`cache_b` chưa từng gọi `.set()` — nó đọc được giá trị do `cache_a` ghi vào, chứng minh trạng thái
+được chia sẻ qua Redis chứ không nằm trong bộ nhớ riêng của từng process.
 
-### Redis CLI output
+### Kết quả Redis CLI
 
 ```bash
 $ docker compose exec redis redis-cli KEYS "rl:cache:*"
@@ -149,49 +150,51 @@ response
 Paris is the capital of France.
 ```
 
-### In-memory vs Redis latency comparison (optional)
+### So sánh độ trễ: cache in-memory vs Redis (tuỳ chọn thêm)
 
-| Metric | In-memory cache | Redis cache | Notes |
+| Metric | Cache in-memory | Cache Redis | Ghi chú |
 |---|---:|---:|---|
-| latency_p50_ms | 238.6 | not separately load-tested | Redis adds a local-network round trip per cache lookup (~sub-ms on localhost) vs. in-process list scan; at this workload size (100 entries) the difference is negligible compared to the 180-260ms simulated provider latency. |
-| latency_p95_ms | 318.44 | not separately load-tested | Same reasoning — dominated by provider latency, not cache backend. |
+| latency_p50_ms | 238.6 | chưa load-test riêng | Redis thêm một round-trip mạng nội bộ cho mỗi lần tra cache (~dưới 1ms trên localhost) so với việc quét list trong process; với quy mô workload này (100 entry) sự khác biệt là không đáng kể so với độ trễ provider mô phỏng (180-260ms). |
+| latency_p95_ms | 318.44 | chưa load-test riêng | Lý do tương tự — bị chi phối bởi độ trễ provider, không phải backend cache. |
 
-## 7. Chaos scenarios
+## 7. Các kịch bản chaos
 
-| Scenario | Expected behavior | Observed behavior | Pass/Fail |
+| Scenario | Hành vi kỳ vọng | Hành vi quan sát được | Pass/Fail |
 |---|---|---|---|
-| primary_timeout_100 | Primary fails 100%, all traffic should fall back to backup | availability=0.98, fallback_success_rate=0.957, circuit_open_count=6, static_fallbacks=2 — backup absorbed almost all traffic, breaker cycled open/half-open on primary as expected | ✅ Pass |
-| primary_flaky_50 | Primary fails 50%, circuit should oscillate between healthy calls and fallback | availability=1.0, fallback_success_rate=1.0, circuit_open_count=0 — with `failure_threshold=3` and only ~50% failure rate, 3-in-a-row is rare enough that the breaker rarely tripped; backup covered every failure that did occur | ✅ Pass |
-| all_healthy | Both providers healthy (overridden to 2% fail rate), all traffic via primary, no circuit opens | availability=1.0, circuit_open_count=0, cache_hit_rate=0.67 | ✅ Pass |
-| both_degraded (custom) | Primary 70% / backup 60% fail rate — expect static fallback responses and low availability once both breakers open | availability=0.0, static_fallbacks=100, circuit_open_count=2 — both providers failed enough to trip their breakers and every request landed on the static fallback message | ✅ Pass |
+| primary_timeout_100 | Primary lỗi 100%, toàn bộ traffic phải fallback sang backup | availability=0.98, fallback_success_rate=0.957, circuit_open_count=6, static_fallbacks=2 — backup hấp thụ gần như toàn bộ traffic, breaker của primary dao động open/half-open đúng như kỳ vọng | ✅ Pass |
+| primary_flaky_50 | Primary lỗi chập chờn 50%, circuit phải dao động giữa gọi thành công và fallback | availability=1.0, fallback_success_rate=1.0, circuit_open_count=0 — với `failure_threshold=3` và tỉ lệ lỗi chỉ ~50%, xác suất 3 lần lỗi liên tiếp khá hiếm nên breaker hầu như không bị trip; backup đã bao phủ hết mọi lỗi xảy ra | ✅ Pass |
+| all_healthy | Cả hai provider khoẻ mạnh (override fail rate xuống 2%), toàn bộ traffic qua primary, không circuit nào mở | availability=1.0, circuit_open_count=0, cache_hit_rate=0.67 | ✅ Pass |
+| both_degraded (tự thêm) | Primary lỗi 70% / backup lỗi 60% — kỳ vọng có response fallback tĩnh và availability thấp khi cả hai breaker cùng mở | availability=0.0, static_fallbacks=100, circuit_open_count=2 — cả hai provider lỗi đủ nhiều để trip breaker và mọi request đều rơi vào thông báo fallback tĩnh | ✅ Pass |
 
-`both_degraded` is the custom scenario added beyond the 3 in the starter config
-(`configs/default.yaml`), added to exercise the "everything is down" path and confirm the gateway
-degrades gracefully (static message, no exception) instead of crashing.
+`both_degraded` là kịch bản tự thêm ngoài 3 kịch bản gốc trong config khởi tạo
+(`configs/default.yaml`), nhằm kiểm chứng nhánh "mọi thứ đều sập" và xác nhận gateway suy giảm một
+cách "graceful" (trả thông báo tĩnh, không crash) thay vì văng exception.
 
-## 8. Failure analysis
+## 8. Phân tích lỗi còn tồn tại
 
-**Remaining weakness:** the combined-run SLIs in §3 look bad (79% availability, 40% fallback
-success) purely because `both_degraded` is included in the same aggregate — a single badly-behaving
-scenario can mask three healthy ones in a top-level dashboard. In a real production system, an
-on-call engineer looking only at the blended availability number would over-react (or under-react,
-if the blend happened to look fine) without per-scenario or per-provider breakdown.
+**Điểm yếu còn tồn tại:** các SLI ở mục 3 (chạy gộp) trông khá tệ (availability 84.5%, fallback
+success 52.67%) chỉ vì `both_degraded` bị gộp chung vào cùng một số liệu tổng — một kịch bản hoạt
+động tệ có thể "che khuất" ba kịch bản khoẻ mạnh khác trên một dashboard tổng quan duy nhất. Trong
+hệ thống production thực tế, một kỹ sư trực (on-call) chỉ nhìn vào con số availability gộp có thể
+phản ứng thái quá (hoặc phản ứng không đủ, nếu số liệu gộp tình cờ trông ổn) vì thiếu breakdown
+theo scenario hoặc theo provider.
 
-**Proposed fix:** emit metrics with a `scenario` (or in production, a `route`/`provider`) label
-dimension instead of one global scalar — e.g., a Prometheus counter/histogram per provider and
-circuit state, so availability can be sliced by provider and by traffic segment. This is exactly
-why `RunMetrics.scenarios` and per-provider `transition_log`s already exist in this codebase; the
-next step is exporting them as labeled time series rather than only a single flattened JSON/CSV
-row.
+**Đề xuất khắc phục:** xuất metrics kèm nhãn (label) theo `scenario` (hoặc trong production là
+`route`/`provider`) thay vì chỉ một số liệu tổng duy nhất — ví dụ dùng counter/histogram Prometheus
+theo từng provider và trạng thái circuit, để có thể "cắt lát" (slice) availability theo provider và
+theo phân khúc traffic. Đây chính là lý do `RunMetrics.scenarios` và `transition_log` theo từng
+provider đã sẵn có trong codebase; bước tiếp theo là xuất chúng thành time series có nhãn thay vì
+chỉ một dòng JSON/CSV được làm phẳng (flatten) duy nhất.
 
-## 9. Next steps
+## 9. Bước tiếp theo
 
-1. Add cost-aware routing (stretch goal): once cumulative `estimated_cost` crosses a budget
-   threshold, route to the cheaper `backup` provider or cache-only mode instead of always trying
-   `primary` first.
-2. Store circuit breaker counters in Redis (`INCR`/`EXPIRE`) so breaker state is shared across
-   gateway replicas the same way the cache already is — right now each replica's breaker is
-   independent, so one replica could still be hammering a dead provider while another has already
-   tripped open.
-3. Export metrics as labeled Prometheus series (per scenario/provider) instead of one flattened
-   JSON, per the failure analysis above, so aggregate dashboards don't hide localized failures.
+1. Thêm cost-aware routing (stretch goal): khi `estimated_cost` tích luỹ vượt một ngưỡng ngân sách,
+   chuyển sang provider `backup` rẻ hơn hoặc chế độ chỉ dùng cache, thay vì luôn thử `primary`
+   trước.
+2. Lưu bộ đếm của circuit breaker vào Redis (`INCR`/`EXPIRE`) để trạng thái breaker được chia sẻ
+   giữa các replica gateway giống như cache đang làm — hiện tại breaker của mỗi replica độc lập
+   nhau, nên một replica vẫn có thể đang dồn dập gọi vào một provider đã chết trong khi replica
+   khác đã kịp mở mạch (trip) rồi.
+3. Xuất metrics dưới dạng Prometheus series có nhãn (theo scenario/provider) thay vì một file JSON
+   được làm phẳng duy nhất, đúng như phân tích ở mục 8, để dashboard tổng quan không che khuất các
+   lỗi cục bộ.

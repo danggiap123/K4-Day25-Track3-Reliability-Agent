@@ -1,31 +1,31 @@
-# Day 10 Reliability Report
+# Báo cáo Reliability - Day 10
 
 **Họ và tên:** Đặng Nguyên Giáp — **MSSV:** 2A202601486
 
-## 1. Architecture summary
+## 1. Tổng quan kiến trúc
 
-Describe your gateway, circuit breaker, fallback chain, and cache layers.
-Include a simple diagram (text/ASCII is fine):
+Mô tả gateway, circuit breaker, chuỗi fallback, và các lớp cache của bạn.
+Kèm theo một sơ đồ đơn giản (dạng text/ASCII cũng được):
 
 ```
 User Request
     |
     v
-[Gateway] ---> [Cache check] ---> HIT? return cached
+[Gateway] ---> [Kiểm tra cache] ---> HIT? trả kết quả đã cache
     |                                 |
     v                                 v MISS
 [Circuit Breaker: Primary] -------> Provider A
-    |  (OPEN? skip)
+    |  (OPEN? bỏ qua)
     v
 [Circuit Breaker: Backup] --------> Provider B
-    |  (OPEN? skip)
+    |  (OPEN? bỏ qua)
     v
-[Static fallback message]
+[Thông báo fallback tĩnh]
 ```
 
-## 2. Configuration
+## 2. Cấu hình
 
-| Setting | Value | Reason |
+| Tham số | Giá trị | Lý do |
 |---|---:|---|
 | failure_threshold | TODO | TODO |
 | reset_timeout_seconds | TODO | TODO |
@@ -34,11 +34,11 @@ User Request
 | similarity_threshold | TODO | TODO |
 | load_test requests | TODO | TODO |
 
-## 3. SLO definitions
+## 3. Định nghĩa SLO
 
-Define your target SLOs and whether your system meets them:
+Định nghĩa mục tiêu SLO và cho biết hệ thống của bạn có đạt được không:
 
-| SLI | SLO target | Actual value | Met? |
+| SLI | Mục tiêu SLO | Giá trị thực tế | Đạt? |
 |---|---|---:|---|
 | Availability | >= 99% | TODO | TODO |
 | Latency P95 | < 2500 ms | TODO | TODO |
@@ -48,9 +48,9 @@ Define your target SLOs and whether your system meets them:
 
 ## 4. Metrics
 
-Paste or summarize `reports/metrics.json`.
+Dán hoặc tóm tắt nội dung từ `reports/metrics.json`.
 
-| Metric | Value |
+| Metric | Giá trị |
 |---|---:|
 | availability | TODO |
 | error_rate | TODO |
@@ -63,11 +63,11 @@ Paste or summarize `reports/metrics.json`.
 | circuit_open_count | TODO |
 | recovery_time_ms | TODO |
 
-## 5. Cache comparison
+## 5. So sánh có cache vs không cache
 
-Run simulation with cache enabled vs disabled. Fill in both columns:
+Chạy simulation với cache bật và tắt. Điền đầy đủ cả hai cột:
 
-| Metric | Without cache | With cache | Delta |
+| Metric | Không cache | Có cache | Chênh lệch |
 |---|---:|---:|---|
 | latency_p50_ms | TODO | TODO | TODO |
 | latency_p95_ms | TODO | TODO | TODO |
@@ -76,53 +76,53 @@ Run simulation with cache enabled vs disabled. Fill in both columns:
 
 ## 6. Redis shared cache
 
-Explain why shared cache matters for production:
+Giải thích vì sao cache dùng chung quan trọng với production:
 
-- Why in-memory cache is insufficient for multi-instance deployments: TODO
-- How `SharedRedisCache` solves this: TODO
+- Vì sao cache in-memory không đủ cho triển khai nhiều instance: TODO
+- `SharedRedisCache` giải quyết vấn đề này như thế nào: TODO
 
-### Evidence of shared state
+### Bằng chứng chia sẻ trạng thái (shared state)
 
-Show that two separate cache instances can see the same data:
+Chứng minh hai instance cache riêng biệt có thể thấy cùng một dữ liệu:
 
 ```
-# Paste test output or script output showing shared state
+# Dán kết quả test hoặc kết quả chạy script cho thấy trạng thái được chia sẻ
 TODO
 ```
 
-### Redis CLI output
+### Kết quả Redis CLI
 
 ```bash
 # docker compose exec redis redis-cli KEYS "rl:cache:*"
 TODO
 ```
 
-### In-memory vs Redis latency comparison (optional)
+### So sánh độ trễ: cache in-memory vs Redis (tuỳ chọn thêm)
 
-| Metric | In-memory cache | Redis cache | Notes |
+| Metric | Cache in-memory | Cache Redis | Ghi chú |
 |---|---:|---:|---|
 | latency_p50_ms | TODO | TODO | |
 | latency_p95_ms | TODO | TODO | |
 
-## 7. Chaos scenarios
+## 7. Các kịch bản chaos
 
-| Scenario | Expected behavior | Observed behavior | Pass/Fail |
+| Scenario | Hành vi kỳ vọng | Hành vi quan sát được | Pass/Fail |
 |---|---|---|---|
-| primary_timeout_100 | All traffic fallback to backup, circuit opens | TODO | TODO |
-| primary_flaky_50 | Circuit oscillates, mix of primary and fallback | TODO | TODO |
-| all_healthy | All requests via primary, no circuit opens | TODO | TODO |
-| (your own scenario) | TODO | TODO | TODO |
+| primary_timeout_100 | Toàn bộ traffic fallback sang backup, circuit mở | TODO | TODO |
+| primary_flaky_50 | Circuit dao động, xen kẽ giữa primary và fallback | TODO | TODO |
+| all_healthy | Toàn bộ request qua primary, không circuit nào mở | TODO | TODO |
+| (kịch bản tự thêm của bạn) | TODO | TODO | TODO |
 
-## 8. Failure analysis
+## 8. Phân tích lỗi còn tồn tại
 
-Explain one remaining weakness and how you would fix it before production.
+Giải thích một điểm yếu còn tồn tại và cách bạn sẽ khắc phục trước khi đưa vào production.
 
-- What could still go wrong?
-- What would you change? (e.g., Redis circuit state, per-user rate limiting, quality SLO)
+- Điều gì vẫn có thể sai sót?
+- Bạn sẽ thay đổi gì? (ví dụ: lưu trạng thái circuit vào Redis, giới hạn tốc độ theo từng user, SLO về chất lượng)
 
-## 9. Next steps
+## 9. Bước tiếp theo
 
-List 2-3 concrete improvements you would make:
+Liệt kê 2-3 cải tiến cụ thể bạn sẽ thực hiện:
 
 1. TODO
 2. TODO
